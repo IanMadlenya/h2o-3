@@ -104,6 +104,7 @@ public class ArrayUtils {
       sum += x[i]*x[i];
     return sum;
   }
+
   public static double l2norm2(double[] x, double[] y) {  // Computes \sum_{i=1}^n (x_i - y_i)^2
     assert x.length == y.length;
     double sse = 0;

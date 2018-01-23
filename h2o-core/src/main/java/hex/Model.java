@@ -2045,6 +2045,10 @@ public abstract class Model<M extends Model<M,P,O>, P extends Model.Parameters, 
                 BinomialModelPrediction bmp = (BinomialModelPrediction) p;
                 d2 = (col == 0) ? bmp.labelIndex : bmp.classProbabilities[col - 1];
                 break;
+              case Ordinal:
+                OrdinalModelPrediction orp = (OrdinalModelPrediction) p;
+                d2 = (col == 0) ? orp.labelIndex : orp.classProbabilities[col - 1];
+                break;
               case Multinomial:
                 MultinomialModelPrediction mmp = (MultinomialModelPrediction) p;
                 d2 = (col == 0) ? mmp.labelIndex : mmp.classProbabilities[col - 1];

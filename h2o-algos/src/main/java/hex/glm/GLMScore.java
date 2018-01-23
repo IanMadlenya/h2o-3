@@ -43,7 +43,8 @@ public class GLMScore extends MRTask<GLMScore> {
     _generatePredictions = generatePredictions;
     _m._parms = m._parms;
     _nclasses = m._output.nclasses();
-    if(_m._parms._family == GLMModel.GLMParameters.Family.multinomial){
+    if(_m._parms._family == GLMModel.GLMParameters.Family.multinomial ||
+            _m._parms._family == GLMModel.GLMParameters.Family.ordinal){
       _beta = null;
       _beta_multinomial = m._output._global_beta_multinomial;
     } else {
@@ -72,18 +73,37 @@ public class GLMScore extends MRTask<GLMScore> {
   }
 
   public double [] scoreRow(DataInfo.Row r, double o, double [] preds) {
-    if(_m._parms._family == GLMModel.GLMParameters.Family.multinomial) {
+    if(_m._parms._family == GLMModel.GLMParameters.Family.ordinal) {  // todo: change this to take various link func
+      final double[][] bm = _beta_multinomial;
+      Arrays.fill(preds,0); // zero out preds
+      int lastClass  = bm.length-1;
+      double expEta = Math.exp(r.innerProduct(bm[0]));
+      double currProb = expEta/(1+expEta);
+      double nextProb = 0;
+
+      preds[1] = currProb;
+      for (int c = 1; c < lastClass; ++c) { // go class 1 to NC-2
+        expEta = Math.exp(r.innerProduct(bm[c]));
+        nextProb = expEta/(1+expEta);
+        preds[c+1] = nextProb-currProb;
+        currProb = nextProb;
+        if (currProb >= 1)  // max out all probability already
+          break;
+      }
+      preds[bm.length] = 1-nextProb;  // set the value to the last class
+      preds[0] = ArrayUtils.maxIndex(preds)-1;
+    } else if (_m._parms._family == GLMModel.GLMParameters.Family.multinomial) {
       double[] eta = _eta;
       final double[][] bm = _beta_multinomial;
       double sumExp = 0;
       double maxRow = 0;
       for (int c = 0; c < bm.length; ++c) {
         eta[c] = r.innerProduct(bm[c]) + o;
-        if(eta[c] > maxRow)
+        if (eta[c] > maxRow)
           maxRow = eta[c];
       }
       for (int c = 0; c < bm.length; ++c)
-        sumExp += eta[c] = Math.exp(eta[c]-maxRow); // intercept
+        sumExp += eta[c] = Math.exp(eta[c] - maxRow); // intercept
       sumExp = 1.0 / sumExp;
       for (int c = 0; c < bm.length; ++c)
         preds[c + 1] = eta[c] * sumExp;
@@ -121,7 +141,8 @@ public class GLMScore extends MRTask<GLMScore> {
   }
   public void map(Chunk[] chks, NewChunk[] preds) {
     if (isCancelled() || _j != null && _j.stop_requested()) return;
-    if(_m._parms._family == GLMModel.GLMParameters.Family.multinomial)
+    if(_m._parms._family == GLMModel.GLMParameters.Family.multinomial ||
+            _m._parms._family == GLMModel.GLMParameters.Family.ordinal)
       _eta = MemoryManager.malloc8d(_nclasses);
     double[] ps;
     _vcov = _m._output._vcov;

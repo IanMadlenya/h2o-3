@@ -32,6 +32,10 @@ public class LinearAlgebraUtils {
     return res;
   }
 
+  public static double getCDF(double eta) {
+    return (eta/(1+eta));
+  }
+
   /*
    * Impute missing values and transform numeric value x in col of dinfo._adaptedFrame
    */

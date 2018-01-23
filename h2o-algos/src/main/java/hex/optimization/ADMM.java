@@ -7,8 +7,6 @@ import water.util.Log;
 import water.util.MathUtils;
 import water.util.MathUtils.Norm;
 
-import java.util.Arrays;
-
 /**
  * Created by tomasnykodym on 3/2/15.
  */
@@ -221,7 +219,7 @@ public class ADMM {
   }
 
   public static double shrinkage(double x, double kappa) {
-    double sign = x < 0?-1:1;
+    double sign = x < 0?-1:1; // here x is reduced by kappa in magnitude regardless of the sign of x.
     double sx = x*sign;
     return sx <= kappa?0:sign*(sx - kappa);
   }
