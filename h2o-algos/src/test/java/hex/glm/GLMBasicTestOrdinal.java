@@ -1,252 +1,162 @@
 package hex.glm;
 
-import hex.FrameSplitter;
-import hex.ModelMetricsBinomialGLM.ModelMetricsMultinomialGLM;
-import hex.ModelMetricsBinomialGLM.ModelMetricsOrdinalGLM;
-import hex.deeplearning.DeepLearningModel;
-import hex.glm.GLMModel.GLMParameters;
-import hex.glm.GLMModel.GLMParameters.Family;
-import hex.glm.GLMModel.GLMParameters.Solver;
+import hex.DataInfo;
 import org.junit.AfterClass;
-import org.junit.Assert;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 import water.DKV;
-import water.H2O;
-import water.Key;
+import water.MemoryManager;
 import water.TestUtil;
 import water.fvec.Frame;
-import water.fvec.Vec;
+
+import java.util.Random;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 
-/**
- * Created by tomasnykodym on 10/28/15.
- */
+// Want to test the following:
+// 1. make sure gradient calculation is correct
+// 2. for Binomial, compare ordinal result with the one for binomial
+// 3. test various cases of parameter settings and make sure illegal parameters are caught and dealt with
 public class GLMBasicTestOrdinal extends TestUtil {
-  static Frame _covtype;
-  static Frame _train;
-  static Frame _test;
+  static Frame _trainBinomialEnum;  // response is 34
+  static Frame _trainBinomial;      // response is 34
+  static Frame _trainMultinomialEnum; // 0, 1 enum, response is 25
+  static Frame _trainMultinomial; // response 25
+  static double _tol = 1e-10;   // threshold for comparison
+  Random rand = new Random();
+
+
 
   @BeforeClass
   public static void setup() {
     stall_till_cloudsize(1);
-    _covtype = parse_test_file("smalldata/covtype/covtype.20k.data");
-    _covtype.replace(_covtype.numCols()-1,_covtype.lastVec().toCategoricalVec()).remove();
-    Key[] keys = new Key[]{Key.make("train"),Key.make("test")};
-    H2O.submitTask(new FrameSplitter(_covtype, new double[]{.8},keys,null)).join();
-    _train = DKV.getGet(keys[0]);
-    _test = DKV.getGet(keys[1]);
+    _trainBinomialEnum = parse_test_file("smalldata/glm_ordinal_logit/ordinal_binomial_training_set_enum_small.csv");
+    convert2Enum(_trainBinomialEnum, new int[]{0,1,2,3,4,5,6,34}); // convert enum columns
+    _trainBinomial = parse_test_file("smalldata/glm_ordinal_logit/ordinal_binomial_training_set_small.csv");
+    convert2Enum(_trainBinomial, new int[]{34});
+    _trainMultinomialEnum = parse_test_file("smalldata/glm_ordinal_logit/ordinal_multinomial_training_set_enum_small.csv");
+    convert2Enum(_trainMultinomialEnum, new int[]{0,1,25});
+    _trainMultinomial = parse_test_file("smalldata/glm_ordinal_logit/ordinal_multinomial_training_set_small.csv");
+    convert2Enum(_trainMultinomial, new int[] {25});
+  }
+
+  public static void convert2Enum(Frame f, int[] indices) {
+    for (int index=0; index < indices.length; index++) {
+      f.replace(indices[index],f.vec(indices[index]).toCategoricalVec()).remove();
+    }
   }
 
   @AfterClass
   public static void cleanUp() {
-    if(_covtype != null)  _covtype.delete();
-    if(_train != null) _train.delete();
-    if(_test != null) _test.delete();
+    if (_trainBinomialEnum != null)
+      _trainBinomialEnum.delete();
+    if (_trainBinomial != null)
+      _trainBinomial.delete();
+    if (_trainMultinomialEnum != null)
+      _trainMultinomialEnum.delete();
+    if (_trainMultinomial != null)
+      _trainMultinomial.delete();
+  }
+
+  // Ordinal regression with class = 2 defaults to binomial.  Hence, they should have the same gradients at the
+  // beginning of a run.
+  @Test
+  public void testCheckGradientBinomial() {
+    checkGradientWithBinomial(_trainBinomial, 34, "C35"); // only numerical columns
+    checkGradientWithBinomial(_trainBinomialEnum, 34, "C35"); // with enum and numerical columns
+  }
+
+  // test ordinal regression with few iterations to make sure our gradient calculation and update is correct
+  // for ordinals with multinomial data.  Ordinal regression coefficients are compared with ones calcluated using
+  // alternate calculation without the distributed framework.  The datasets contains only numerical columns.
+  @Ignore
+  public void testOrdinalMultinomial() {
+    int nclasses = _trainMultinomial.vec(25).domain().length;  // number of response classes
+    int iterNum = rand.nextInt(10)+1;   // number of iterations to test
+    GLMModel.GLMParameters paramsO = new GLMModel.GLMParameters(GLMModel.GLMParameters.Family.ordinal,
+            GLMModel.GLMParameters.Family.ordinal.defaultLink, new double[]{0}, new double[]{0}, 0, 0);
+    paramsO._train = _trainMultinomial._key;
+    paramsO._lambda = new double[]{0.01};
+    paramsO._lambda_search = false;
+    paramsO._response_column = "C26";
+    paramsO._lambda = new double[]{1};
+    paramsO._alpha = new double[]{1};
+    paramsO._objective_epsilon = 1e-6;
+    paramsO._beta_epsilon = 1e-4;
+    paramsO._alpha = new double[]{1};
+    paramsO._max_iterations = iterNum;
+    paramsO._standardize = false;
+
+    GLMModel model = new GLM(paramsO).trainModel().get();
+    updateOrdinalCoeff( _trainMultinomial, 25, paramsO);
+
+  }
+
+  public void updateOrdinalCoeff(Frame fr, int respCol, GLMModel.GLMParameters params) {
+
   }
 
 
-  @Test
-  public void testCovtypeBasic(){
-    GLMParameters params = new GLMParameters(Family.ordinal);
-    GLMModel model = null;
-    Frame preds = null;
-    Vec weights = _covtype.anyVec().makeCon(1);
-    Key k = Key.<Frame>make("cov_with_weights");
-    Frame f = new Frame(k,_covtype.names(),_covtype.vecs());
-    f.add("weights",weights);
-    DKV.put(f);
+  public void checkGradientWithBinomial(Frame fr, int respCol, String resp) {
+    DataInfo dinfo=null;
+    DataInfo odinfo = null;
     try {
-      params._response_column = "C55";
-      params._train = k;
-      params._valid = _covtype._key;
-      params._lambda = new double[]{4.881e-05};
-      params._alpha = new double[]{1};
-      params._objective_epsilon = 1e-6;
-      params._beta_epsilon = 1e-4;
-      params._weights_column = "weights";
-      params._missing_values_handling = DeepLearningModel.DeepLearningParameters.MissingValuesHandling.Skip;
-      double[] alpha = new double[]{1};
-      double[] expected_deviance = new double[]{25499.76};
-      double[] lambda = new double[]{2.544750e-05};
-      for (Solver s : new Solver[]{Solver.COORDINATE_DESCENT}) {  // ordinal regression only support CD
-        System.out.println("solver = " + s);
-        params._solver = s;
-        params._max_iterations = params._solver == Solver.L_BFGS?300:10;
-        for (int i = 0; i < alpha.length; ++i) {
-          params._alpha[0] = alpha[i];
-          params._lambda[0] = lambda[i];
-          model = new GLM(params).trainModel().get();
-          System.out.println(model._output._model_summary);
-          System.out.println(model._output._training_metrics);
-          System.out.println(model._output._validation_metrics);
-          assertTrue(model._output._training_metrics.equals(model._output._validation_metrics));
-        //  assertTrue(((ModelMetricsOrdinalGLM) model._output._training_metrics)._resDev <= expected_deviance[i] * 1.1);
-          preds = model.score(_covtype);
-          Assert.assertTrue(model.testJavaScoring(f, preds, 1e-6));
-          ModelMetricsOrdinalGLM mmTrain = (ModelMetricsOrdinalGLM) hex.ModelMetricsOrdinal.getFromDKV(model, _covtype);
-          assertTrue(model._output._training_metrics.equals(mmTrain));
-          model.delete();
-          model = null;
-          preds.delete();
-          preds = null;
-        }
-      }
-    } finally{
-      weights.remove();
-      DKV.remove(k);
-      if(model != null)model.delete();
-      if(preds != null)preds.delete();
+      int nclasses = fr.vec(respCol).domain().length;
+      GLMModel.GLMParameters params = new GLMModel.GLMParameters(GLMModel.GLMParameters.Family.binomial,
+              GLMModel.GLMParameters.Family.binomial.defaultLink, new double[]{0}, new double[]{0}, 0, 0);
+      // params._response = fr.find(params._response_column);
+      params._train = fr._key;
+      params._lambda = new double[]{1};
+      params._lambda_search = false;
+      params._response_column = resp;
+      dinfo = new DataInfo(fr, null, 1,
+              params._use_all_factor_levels || params._lambda_search,
+              params._standardize ? DataInfo.TransformType.STANDARDIZE : DataInfo.TransformType.NONE,
+              DataInfo.TransformType.NONE, true, false, false,
+              false, false, false);
+      DKV.put(dinfo._key, dinfo);
+      GLMModel.GLMParameters paramsO = new GLMModel.GLMParameters(GLMModel.GLMParameters.Family.ordinal,
+              GLMModel.GLMParameters.Family.ordinal.defaultLink, new double[]{0}, new double[]{0}, 0, 0);
+      paramsO._train = fr._key;
+      paramsO._lambda = new double[]{0.01};
+      paramsO._lambda_search = false;
+      paramsO._response_column = resp;
+      paramsO._lambda = new double[]{1};
+      paramsO._alpha = new double[]{1};
+      odinfo = new DataInfo(fr, null, 1,
+              paramsO._use_all_factor_levels || paramsO._lambda_search,
+              paramsO._standardize ? DataInfo.TransformType.STANDARDIZE : DataInfo.TransformType.NONE,
+              DataInfo.TransformType.NONE, true, false, false,
+              false, false, false);
+      DKV.put(odinfo._key, odinfo);
+      double[][] _betaMultinomial = new double[nclasses][];
+      for (int i = 0; i < nclasses; ++i)
+        _betaMultinomial[i] = MemoryManager.malloc8d(odinfo.fullN() + 1);
+      double[] beta = new double[_betaMultinomial[0].length];
+
+      GLMTask.GLMGradientTask grBinomial = new GLMTask.GLMBinomialGradientTask(null, dinfo, params,
+              1.0, beta).doAll(dinfo._adaptedFrame);
+      GLMTask.GLMMultinomialGradientTask grOrdinal = new GLMTask.GLMMultinomialGradientTask(null, odinfo, 1.0,
+              _betaMultinomial, 1.0, paramsO._link, paramsO).doAll(odinfo._adaptedFrame);
+      compareBinomalOrdinalGradients(grBinomial, grOrdinal);  // compare and make sure the two gradients agree
+
+    } finally {
+      dinfo.remove();
+      odinfo.remove();
     }
   }
 
-  @Test
-  public void testCovtypeMinActivePredictors(){
-    GLMParameters params = new GLMParameters(Family.multinomial);
-    GLMModel model = null;
-    Frame preds = null;
-    try {
-      params._response_column = "C55";
-      params._train = _covtype._key;
-      params._valid = _covtype._key;
-      params._lambda = new double[]{4.881e-05};
-      params._alpha = new double[]{1};
-      params._objective_epsilon = 1e-6;
-      params._beta_epsilon = 1e-4;
-      params._max_active_predictors = 50;
-      params._max_iterations = 10;
-      double[] alpha = new double[]{.99};
-      double expected_deviance = 33000;
-      double[] lambda = new double[]{2.544750e-05};
-      Solver s = Solver.COORDINATE_DESCENT;
-      System.out.println("solver = " + s);
-      params._solver = s;
-      model = new GLM(params).trainModel().get();
-      System.out.println(model._output._model_summary);
-      System.out.println(model._output._training_metrics);
-      System.out.println(model._output._validation_metrics);
-      System.out.println("rank = " + model._output.rank() + ", max active preds = " + (params._max_active_predictors + model._output.nclasses()));
-      assertTrue(model._output.rank() <= params._max_active_predictors + model._output.nclasses());
-      assertTrue(model._output._training_metrics.equals(model._output._validation_metrics));
-      assertTrue(((ModelMetricsMultinomialGLM) model._output._training_metrics)._resDev <= expected_deviance * 1.1);
-      preds = model.score(_covtype);
-      ModelMetricsMultinomialGLM mmTrain = (ModelMetricsMultinomialGLM) hex.ModelMetricsMultinomial.getFromDKV(model, _covtype);
-      assertTrue(model._output._training_metrics.equals(mmTrain));
-      model.delete();
-      model = null;
-      preds.delete();
-      preds = null;
-    } finally{
-      if(model != null)model.delete();
-      if(preds != null)preds.delete();
+  public void compareBinomalOrdinalGradients(GLMTask.GLMGradientTask bGr, GLMTask.GLMMultinomialGradientTask oGr) {
+    // compare likelihood
+    assertEquals(bGr._likelihood, oGr._likelihood, _tol);
+
+    // compare gradients
+    double[] binomialG = bGr._gradient;
+    double[] ordinalG = oGr.gradient();
+
+    for (int index = 0; index < binomialG.length; index++) {
+      assertEquals(binomialG[index], ordinalG[index], _tol);
     }
   }
-
-
-  @Test
-  public void testCovtypeLS(){
-    GLMParameters params = new GLMParameters(Family.multinomial);
-    GLMModel model = null;
-    Frame preds = null;
-    try {
-      double expected_deviance = 33000;
-      params._nlambdas = 3;
-      params._response_column = "C55";
-      params._train = _covtype._key;
-      params._valid = _covtype._key;
-      params._alpha = new double[]{.99};
-      params._objective_epsilon = 1e-6;
-      params._beta_epsilon = 1e-4;
-      params._max_active_predictors = 50;
-      params._max_iterations = 500;
-      params._solver = Solver.AUTO;
-      params._lambda_search = true;
-      model = new GLM(params).trainModel().get();
-      System.out.println(model._output._training_metrics);
-      System.out.println(model._output._validation_metrics);
-      assertTrue(model._output._training_metrics.equals(model._output._validation_metrics));
-      preds = model.score(_covtype);
-      ModelMetricsMultinomialGLM mmTrain = (ModelMetricsMultinomialGLM) hex.ModelMetricsMultinomial.getFromDKV(model, _covtype);
-      assertTrue(model._output._training_metrics.equals(mmTrain));
-      assertTrue(((ModelMetricsMultinomialGLM) model._output._training_metrics)._resDev <= expected_deviance);
-      System.out.println(model._output._model_summary);
-      model.delete();
-      model = null;
-      preds.delete();
-      preds = null;
-    } finally{
-      if(model != null)model.delete();
-      if(preds != null)preds.delete();
-    }
-  }
-
-  @Test
-  public void testCovtypeNAs(){
-    GLMParameters params = new GLMParameters(Family.multinomial);
-    GLMModel model = null;
-    Frame preds = null;
-    Frame covtype_subset = null, covtype_copy = null;
-    try {
-      double expected_deviance = 26000;
-      covtype_copy = _covtype.deepCopy("covtype_copy");
-      DKV.put(covtype_copy);
-      Vec.Writer w = covtype_copy.vec(54).open();
-      w.setNA(10);
-      w.setNA(20);
-      w.setNA(30);
-      w.close();
-      covtype_subset = new Frame(Key.<Frame>make("covtype_subset"),new String[]{"C51","C52","C53","C54","C55"},covtype_copy.vecs(new int[]{50,51,52,53,54}));
-      DKV.put(covtype_subset);
-//      params._nlambdas = 3;
-      params._response_column = "C55";
-      params._train = covtype_copy._key;
-      params._valid = covtype_copy._key;
-      params._alpha = new double[]{.99};
-      params._objective_epsilon = 1e-6;
-      params._beta_epsilon = 1e-4;
-      params._max_active_predictors = 50;
-      params._max_iterations = 500;
-      params._solver = Solver.L_BFGS;
-      params._missing_values_handling = DeepLearningModel.DeepLearningParameters.MissingValuesHandling.Skip;
-//      params._lambda_search = true;
-      model = new GLM(params).trainModel().get();
-      assertEquals(covtype_copy.numRows()-3-1,model._nullDOF);
-      System.out.println(model._output._training_metrics);
-      System.out.println(model._output._validation_metrics);
-      assertTrue(model._output._training_metrics.equals(model._output._validation_metrics));
-      preds = model.score(covtype_copy);
-      ModelMetricsMultinomialGLM mmTrain = (ModelMetricsMultinomialGLM) hex.ModelMetricsMultinomial.getFromDKV(model, covtype_copy);
-      assertTrue(model._output._training_metrics.equals(mmTrain));
-      assertTrue(((ModelMetricsMultinomialGLM) model._output._training_metrics)._resDev <= expected_deviance);
-      System.out.println(model._output._model_summary);
-      model.delete();
-      model = null;
-      preds.delete();
-      preds = null;
-      // now run the same on the subset
-      params._train = covtype_subset._key;
-      model = new GLM(params).trainModel().get();
-      assertEquals(covtype_copy.numRows()-3-1,model._nullDOF);
-      System.out.println(model._output._training_metrics);
-      System.out.println(model._output._validation_metrics);
-      assertTrue(model._output._training_metrics.equals(model._output._validation_metrics));
-      preds = model.score(_covtype);
-      System.out.println(model._output._model_summary);
-      assertTrue(((ModelMetricsMultinomialGLM) model._output._training_metrics)._resDev <= 66000);
-      model.delete();
-      model = null;
-      preds.delete();
-      preds = null;
-
-    } finally{
-      if(covtype_subset != null) covtype_subset.delete();
-      if(covtype_copy != null)covtype_copy.delete();
-      if(model != null)model.delete();
-      if(preds != null)preds.delete();
-    }
-  }
-
-
 }
