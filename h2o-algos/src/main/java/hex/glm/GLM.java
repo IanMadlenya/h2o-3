@@ -704,54 +704,6 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       } while(progress(beta,_state.gslvr().getGradient(beta)));
     }
 
-
-    private void fitIRLSM_ordinal(Solver s) {
-      assert _dinfo._responses == 3 : "IRLSM for ordinal needs extra information encoded in additional reponses, expected 3 response vecs, got " + _dinfo._responses;
-      double[] beta = _state.betaMultinomial();
-      double[] betaCnd = new double[1];
-      int predSize = _dinfo.fullN();
-      int paramNumRep = _dinfo.fullN()+1;
-      int numClass = _state._nclasses;
-      do {
-        beta = beta.clone();    // copy over the coefficients
-        // perform updates only on the betas excluding the intercept
-        long t1 = System.currentTimeMillis(); // next PDF and CDF of yi==j for each class
-        new GLMOrdinalUpdateBeta(_state.activeDataMultinomial(), _job._key
-                , beta).doAll(_state.activeDataMultinomial()._adaptedFrame); // update Math.etas for beta update
-
-        for (int pIndex = 0; pIndex < predSize; pIndex++) {  // update each coordinates
-          // calculate gradient for each coordinate except intercept
-          GLMOrdinalBetaGradientTask updateBetaGradient = new GLMOrdinalBetaGradientTask(_job, _dinfo, _state.l2pen(), beta[pIndex], _parms._obj_reg, _parms._link, _parms, pIndex).doAll(_dinfo._adaptedFrame);
-          // grab the gradient and update one coefficient
-          if (updateBetaGradient._gradient[0] != 0.0) { // already setup beta change to be -grad*learningRate*...
-            COD_solve_ordinal(updateBetaGradient._gradient, _state._alpha, _state.lambda(), betaCnd, false);
-            // add effect of coefficient update to Math.etas
-            new GLMOrdinalAddBetaChange(_job, _dinfo, betaCnd[0], pIndex).doAll(_dinfo._adaptedFrame);
-            // grab the gradient and update one coefficient, new beta = beta+betaCnd
-            updateOrdinalBeta(beta, betaCnd, new int[]{pIndex}, paramNumRep, 1, numClass);
-          }
-        }
-
-        // perform updates only on the intercept
-        int interceptNum = _nclass-1; // number of thresholds for ordinal
-        for (int c = 0; c < interceptNum; c++) {
-/*          LineSearchSolver ls = (_state.l1pen() == 0)
-                  ? new MoreThuente(_state.gslvrMultinomial(c), _state.betaMultinomial(c,beta), _state.ginfoMultinomial(c))
-                  : new SimpleBacktrackingLS(_state.gslvrMultinomial(c), _state.betaMultinomial(c,beta), _state.l1pen());*/
-          new GLMOrdinalUpdateIcpt(_state.activeDataMultinomial(), _job._key, beta, c).doAll(_state.activeDataMultinomial()._adaptedFrame); // update Math.etas for beta update
-          _state.setActiveClass(c);
-          GLMOrdinalIcptGradientTask updateIcptGradient = new GLMOrdinalIcptGradientTask(_job, _dinfo, _state.l2pen(), beta[c], _parms._obj_reg, _parms._link, _parms, c, numClass).doAll(_dinfo._adaptedFrame);
-          // calculate gradient for each intercept
-          if (updateIcptGradient._gradient[0] != 0.0) {
-            COD_solve_ordinal(updateIcptGradient._gradient, _state._alpha, _state.lambda(), betaCnd, true);
-            // grab the gradient and update one coefficient, new beta = beta+betaCnd
-            updateOrdinalIcpt(beta, betaCnd, new int[]{c}, paramNumRep, 1);
-          }
-        }
-        _state.setActiveClass(-1);
-      } while (progress(beta, _state.gslvr().getGradient(beta)));
-    }
-
     // use regular gradient descend here.  Need to figure out how to adjust for the alpha, lambda for the elastic net
     private void fitIRLSM_ordinal_default(Solver s) {
       assert _dinfo._responses == 3 : "IRLSM for ordinal needs extra information encoded in additional reponses, expected 3 response vecs, got " + _dinfo._responses;
@@ -760,7 +712,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       int predSizeP1 = predSize+1;
       int numClass = _state._nclasses;
       int numIcpt = numClass-1;
-      double[] betaCnd = new double[predSize];
+      double[] betaCnd = new double[predSize];  // number of predictors
       double[] icptCnd = new double[numClass-1];
       do {
         beta = beta.clone();    // copy over the coefficients
@@ -775,7 +727,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
           beta[pindex] += betaCnd[pindex]; // take the negative of the gradient and stuff
         }
 
-        for (int pindex=0; pindex<numIcpt; pindex++) {
+        for (int pindex=0; pindex<numIcpt; pindex++) {  // update the intercepts
           int icptindex = (pindex+1)*predSizeP1-1;
           icptCnd[pindex] = bc.applyBounds(-grads[icptindex],icptindex);
           beta[icptindex] += icptCnd[pindex];
